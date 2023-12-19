@@ -1,16 +1,34 @@
-#!/bin/sh
-set -ex
+#!/bin/bash
+set -e
 
 if [ "$#" -ne 2 ]; then
   echo "Usage:"
   echo "  $0 zpool/zvol zpool/zvol"
   exit 1
 fi
-echo migration $1 to $2
 
-snap="migrate"
+source=$1
+dest=$2
 
-zfs snapshot $1@$snap
-zfs send $1@$snap | zfs recv $2
-zfs destroy $1@$snap
-zfs destroy $2@$snap
+source_volume_name=$(echo $source | rev | cut -d "/" -f 1 | rev)
+source_length=${#source}
+source_volume_name_length=${#source_volume_name}
+source_pool_length=$(($source_length - $source_volume_name_length - 1))
+source_pool=${source:0:$source_pool_length}
+
+dest_volume_name=$(echo $dest | rev | cut -d "/" -f 1 | rev)
+dest_length=${#dest}
+dest_volume_name_length=${#dest_volume_name}
+dest_pool_length=$(($dest_length - $dest_volume_name_length - 1))
+dest_pool=${dest:0:$dest_pool_length}
+
+zfs snapshot $1@$dest_volume_name
+
+if [ "$source_pool" != "$dest_pool" ]; then
+        echo cloning $1 to $2
+        zfs clone $1@$dest_volume_name $2
+else
+        echo migrating $1 to $2
+        zfs send $1@$dest_volume_name | zfs recv $2
+        zfs destroy $2@$dest_volume_name
+fi
