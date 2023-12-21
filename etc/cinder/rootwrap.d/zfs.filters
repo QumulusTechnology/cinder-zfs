@@ -5,4 +5,4 @@ zpool: CommandFilter, zpool, root
 
 # TODO(nusov) move zfs-migrate commands to zfs.py
 zfs-migrate: CommandFilter, zfs-migrate, root
-
+zfs-clone: CommandFilter, zfs-clone, root

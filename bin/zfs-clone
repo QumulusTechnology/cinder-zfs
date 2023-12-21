@@ -15,8 +15,6 @@ dest_volume_name=$(echo $dest | rev | cut -d "/" -f 1 | rev)
 
 zfs snapshot $source@$dest_volume_name
 
-echo migrating $source to $dest
-
-zfs send $source@$dest_volume_name | zfs recv $dest
-zfs destroy $source@$dest_volume_name
+echo cloning $source to $dest
+zfs clone $source@$dest_volume_name $dest
 zfs set volsize=$size $dest

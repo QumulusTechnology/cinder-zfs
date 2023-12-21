@@ -99,11 +99,16 @@ class ZFSVolumeDriver(driver.VolumeDriver):
             zpool = self.configuration.zfs_zpool
         return "%s/%s" % (zpool, volume['name'])
 
+    def _zfs_pool(self, volume, zpool=None):
+        if zpool is None:
+            zpool = self.configuration.zfs_zpool
+        return "%s" % (zpool)
+
     def _zfs_snapshot(self, snapshot, zpool=None):
         if zpool is None:
             zpool = self.configuration.zfs_zpool
-        return "%s/%s@%s" % (zpool, 
-                             snapshot['volume_name'], 
+        return "%s/%s@%s" % (zpool,
+                             snapshot['volume_name'],
                              snapshot['name'])
 
     def _sizestr(self, size_in_g):
@@ -175,7 +180,7 @@ class ZFSVolumeDriver(driver.VolumeDriver):
 
         # Calculate the total volumes used by the ZFS pool.
         try:
-            out, err = self._execute('zfs', 'list', '-r', '-H', 
+            out, err = self._execute('zfs', 'list', '-r', '-H',
                                      self.zpool,
                                      root_helper=root_helper,
                                      run_as_root=True)
@@ -186,7 +191,7 @@ class ZFSVolumeDriver(driver.VolumeDriver):
                                     % six.text_type(exc.stderr))
             raise exception.VolumeBackendAPIException(
                 data=exception_message)
-        
+
 
         # Calculate the total snapshots used by the ZFS pool.
         try:
@@ -272,7 +277,7 @@ class ZFSVolumeDriver(driver.VolumeDriver):
                                     % six.text_type(exc.stderr))
             raise exception.VolumeBackendAPIException(
                 data=exception_message)
-        
+
     def update_migrated_volume(self, ctxt, volume, new_volume,
                                original_volume_status):
         """Return model update from ZFS for migrated volume.
@@ -293,7 +298,7 @@ class ZFSVolumeDriver(driver.VolumeDriver):
         if original_volume_status == 'available':
             current_name = CONF.volume_name_template % new_volume['id']
             original_volume_name = CONF.volume_name_template % volume['id']
-            
+
             current_zvol_name = self._zfs_volume({'name': current_name})
             original_zvol_name = self._zfs_volume({'name': original_volume_name})
 
@@ -350,27 +355,49 @@ class ZFSVolumeDriver(driver.VolumeDriver):
 
         root_helper = utils.get_root_helper()
         zvol = self._zfs_volume(volume)
+        zpool = self._zfs_pool(volume)
 
-        # Check zvol for snapshots
+        # # Check zvol for snapshots
+        # try:
+        #     out_zvol_snapshots, err = self._execute('zfs', 'list', '-r', '-H',
+        #                              '-t', 'snapshot',
+        #                              zvol,
+        #                              root_helper=root_helper,
+        #                              run_as_root=True)
+        # except processutils.ProcessExecutionError:
+        #     exception_message = (_("Failed to list snapshots "
+        #                             "error message was: %s")
+        #                             % six.text_type(exc.stderr))
+        #     raise exception.VolumeBackendAPIException(
+        #         data=exception_message)
+
+        # Check zvol for clones
         try:
-            out, err = self._execute('zfs', 'list', '-r', '-H',
-                                     '-t', 'snapshot',
-                                     zvol,
+            out, err = self._execute('zfs', 'list', '-r', zpool,
+                                     '-o', 'origin',
                                      root_helper=root_helper,
                                      run_as_root=True)
         except processutils.ProcessExecutionError:
-            exception_message = (_("Failed to list snapshots "
+            exception_message = (_("Failed to list clones "
                                     "error message was: %s")
                                     % six.text_type(exc.stderr))
             raise exception.VolumeBackendAPIException(
                 data=exception_message)
 
-        # At this point, clone-snap snapshots should be promoted
-        snapshots = [x for x in out.splitlines() if "clone-snap" not in x]
-        if len(snapshots) > 0:
-            LOG.error(_('Unable to delete due to existing snapshot '
+        clones = [x for x in out.splitlines() if zvol in x]
+
+        if len(clones) > 0:
+            LOG.error(_('Unable to delete due to existing clones '
                         'for volume: %s'), volume['name'])
             raise exception.VolumeIsBusy(volume_name=volume['name'])
+
+
+        # # At this point, clone-snap snapshots should be promoted
+        # snapshots = [x for x in out.splitlines() if "clone-snap" not in x]
+        # if len(snapshots) > 0:
+        #     LOG.error(_('Unable to delete due to existing snapshot '
+        #                 'for volume: %s'), volume['name'])
+        #     raise exception.VolumeIsBusy(volume_name=volume['name'])
 
         # Delete zvol
         try:
@@ -416,7 +443,7 @@ class ZFSVolumeDriver(driver.VolumeDriver):
                           "skipping delete operations"), snapshot['name'])
             LOG.info(_('Successfully deleted snapshot: %s'), snapshot['id'])
             return True
-        
+
         try:
             out, err = self._execute('zfs', 'list', '-H',
                                      '-t', 'volume',
@@ -472,17 +499,35 @@ class ZFSVolumeDriver(driver.VolumeDriver):
         LOG.info(_('Creating clone of volume: %s'), src_vref['id'])
 
         root_helper = utils.get_root_helper()
-        try:
-            self._execute('zfs-migrate',
-                          self._zfs_volume(src_vref),
-                          self._zfs_volume(volume),
-                          root_helper=root_helper,
-                          run_as_root=True)
-        except Exception as e:
-            with excutils.save_and_reraise_exception():
-                LOG.error("Volume cloning failed due to "
-                          "exception: %(reason)s.",
-                          {'reason': six.text_type(e)}, resource=volume)
+
+        if self._zfs_pool(src_vref) == self._zfs_pool(volume):
+            LOG.info(_('Destination is in the same pool so cloning snapshot: %s'), src_vref['id'])
+            try:
+                self._execute('zfs-clone',
+                            self._zfs_volume(src_vref),
+                            self._zfs_volume(volume),
+                            self._sizestr(volume['size']),
+                            root_helper=root_helper,
+                            run_as_root=True)
+            except Exception as e:
+                with excutils.save_and_reraise_exception():
+                    LOG.error("Volume cloning failed due to "
+                            "exception: %(reason)s.",
+                            {'reason': six.text_type(e)}, resource=volume)
+        else:
+            LOG.info(_('Destination is in a different pool so migrating data: %s'), src_vref['id'])
+            try:
+                self._execute('zfs-migrate',
+                            self._zfs_volume(src_vref),
+                            self._zfs_volume(volume),
+                            self._sizestr(volume['size']),
+                            root_helper=root_helper,
+                            run_as_root=True)
+            except Exception as e:
+                with excutils.save_and_reraise_exception():
+                    LOG.error("Volume cloning failed due to "
+                            "exception: %(reason)s.",
+                            {'reason': six.text_type(e)}, resource=volume)
 
     def clone_image(self, context, volume,
                     image_location, image_meta,
@@ -799,11 +844,11 @@ class ZFSVolumeDriver(driver.VolumeDriver):
                                    % six.text_type(exc.stderr))
             raise exception.VolumeBackendAPIException(
                 data=exception_message)
-
         try:
             self._execute('zfs-migrate',
                           self._zfs_volume(volume, zpool=self.zpool),
                           self._zfs_volume(volume, zpool=dest_zpool),
+                          self._sizestr(volume['size']),
                           root_helper=root_helper,
                           run_as_root=True)
         except Exception as e:
@@ -813,7 +858,7 @@ class ZFSVolumeDriver(driver.VolumeDriver):
                           {'reason': six.text_type(e)}, resource=volume)
         self.delete_volume(volume)
         return (True, None)
-    
+
     def get_pool(self, volume):
         return self.backend_name
 
@@ -844,4 +889,3 @@ class ZFSVolumeDriver(driver.VolumeDriver):
     def terminate_connection(self, volume, connector, **kwargs):
         return self.target_driver.terminate_connection(volume, connector,
                                                        **kwargs)
-
