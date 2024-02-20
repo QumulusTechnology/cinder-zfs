@@ -478,7 +478,7 @@ class ZFSVolumeDriver(driver.VolumeDriver):
             zpool = self.configuration.zfs_zpool
         return "/dev/zvol/%s/%s" % (zpool, volume['name'])
 
-    def copy_image_to_volume(self, context, volume, image_service, image_id):
+    def copy_image_to_volume(self, context, volume, image_service, image_id, disable_sparse: bool = False):
         """Fetch the image from image_service and write it to the volume."""
         image_utils.fetch_to_raw(context,
                                  image_service,
